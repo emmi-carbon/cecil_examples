@@ -35,4 +35,6 @@ The examples here use 1 hectare AOIs per asset (well below the 0.1° / ~11 km CH
 
 ## License
 
-Released under the [MIT License](../../LICENSE) (same as the rest of `cecil_examples`).
+The example code in this directory (notebooks, `chd.py`) is released under the [MIT License](../../LICENSE), same as the rest of `cecil_examples`.
+
+The Emmi Climate Hazard Diagnostics **datasets themselves are commercial** and licensed through Cecil under their standard data agreement. Running the notebooks creates Cecil subscriptions against your account; you'll need a valid Cecil API key and the associated data entitlement. See the [Cecil dataset pages](https://docs.cecil.earth/datasets) for current licensing terms, and contact Cecil or Emmi for commercial use beyond the example.
