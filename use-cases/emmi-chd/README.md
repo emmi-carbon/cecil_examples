@@ -1,6 +1,6 @@
 # Emmi Climate Hazard Diagnostics
 
-End-to-end examples using Emmi's Climate Hazard Diagnostics (CHD) datasets via Cecil:
+Portfolio and single-asset examples using Emmi's Climate Hazard Diagnostics (CHD) datasets via Cecil:
 
 - [Wildfire](https://docs.cecil.earth/datasets/a70e1872-aaa6-480d-b2fc-f778e0343de5)
 - [Tropical Cyclones](https://docs.cecil.earth/datasets/158e774c-fd11-4402-b6ce-2596960f4637)
@@ -9,7 +9,7 @@ End-to-end examples using Emmi's Climate Hazard Diagnostics (CHD) datasets via C
 
 See the Cecil Docs for the full per-dataset variable list and methodology notes.
 
-Wildfire and Cyclones are provided on a ~0.1° (~11 km) (Floods are ~0.0089°, ~1km) global grid for a historical baseline (1980, calibrated to present-day) and 2030 / 2050 / 2080 under IPCC RCP2.6 / 4.5 / 6.0 / 8.5. Floods are not provided for RCPs 2.5 or 6.0
+Wildfire and cyclones are provided on a ~0.1° (~11 km) global grid; floods are finer at ~0.0089° (~1 km). All datasets carry a historical baseline (1980, calibrated to present-day) and futures at 2030 / 2050 / 2080 under IPCC Representative Concentration Pathways (RCPs) 2.6 / 4.5 / 6.0 / 8.5. Floods are not provided for RCP2.6 or RCP6.0.
 
 ## Examples
 
@@ -29,7 +29,7 @@ Both notebooks share a `chd.py` helper (in this directory) that wraps the Cecil 
 
 ## Cost note
 
-Cecil charges per hectare of AOI. Emmi CHD is **bundle priced**: one `$/ha` covers all four hazard datasets and every layer (intensity, probability, AAL, fire-danger-days) across baseline plus four RCP scenarios. You do **not** multiply by the number of datasets.
+Cecil charges per hectare of Area of Interest (AOI). Emmi CHD is **bundle priced**: one `$/ha` covers all four hazard datasets and every layer they publish (intensity, probability, Average Annual Loss (AAL), fire-danger-days, wind speed, flood depth) across baseline plus four RCP scenarios. You do **not** multiply by the number of datasets.
 
 The examples here use 1 hectare AOIs per asset (well below the 0.1° / ~11 km CHD pixel), so the whole 5-asset portfolio costs cents at the subscription tier.
 
@@ -37,4 +37,4 @@ The examples here use 1 hectare AOIs per asset (well below the 0.1° / ~11 km CH
 
 The example code in this directory (notebooks, `chd.py`) is released under the [MIT License](../../LICENSE), same as the rest of `cecil_examples`.
 
-The Emmi Climate Hazard Diagnostics **datasets themselves are commercial** and licensed through Cecil under their standard data agreement. Running the notebooks creates Cecil subscriptions against your account; you'll need a valid Cecil API key and the associated data entitlement. See the [Cecil dataset pages](https://docs.cecil.earth/datasets) for current licensing terms, and contact Cecil or Emmi for commercial use beyond the example.
+The Emmi Climate Hazard Diagnostics **datasets themselves are commercial** and licensed through Cecil under their standard data agreement. Running the notebooks creates Cecil subscriptions against your account; you'll need a valid Cecil API key and the associated data entitlement. See the [Cecil dataset pages](https://docs.cecil.earth/datasets) for current licensing terms, and contact Cecil for commercial use beyond this example.

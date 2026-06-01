@@ -1,13 +1,12 @@
-"""Emmi Climate Hazard Diagnostics helpers for the Cecil SDK.
+"""Emmi Climate Hazard Diagnostics (CHD) helpers for the Cecil SDK.
 
 Plain functions composing ``cecil.Client`` calls into the common CHD patterns:
-hectare-scale point AOIs, safe re-runnable provisioning, scenario-aware
-sampling. Requires ``CECIL_API_KEY`` in the environment.
+hectare-scale point Areas of Interest (AOIs), safe re-runnable provisioning,
+scenario-aware sampling. Requires ``CECIL_API_KEY`` in the environment.
 
 Public API:
     DATASETS, METRICS, SCENARIOS_BY_HAZARD   catalogue
     list_variables                           discover valid variable names
-    verify_catalog                           cross-check the catalogue against the live API
     point_aoi                                build a square AOI for an asset
     estimate_cost                            preview $ before subscribing
     provision                                create or reuse AOIs + subscriptions
@@ -64,28 +63,15 @@ VALID_SCENARIOS = ("baseline", "rcp2p6", "rcp4p5", "rcp6p0", "rcp8p5")
 VALID_FUTURE_YEARS = (2030, 2050, 2080)
 BASELINE_YEAR = 1980
 
-# Variables that exist in Cecil's response but are deliberately omitted from
-# METRICS because they aren't necessary for portfolio-style continuous sampling.
-# verify_catalog() subtracts these so they don't show up as drift.
-KNOWN_EXCLUDED = frozenset(f"land_mask_{s}" for s in VALID_SCENARIOS)
-
-
 def list_variables(metric: str | None = None,
                    scenario: str | None = None,
-                   hazard: str | None = None,
-                   client=None,
-                   verify: bool = True) -> list[str]:
+                   hazard: str | None = None) -> list[str]:
     """Return CHD variable names matching the filters. ``None`` means any.
 
         list_variables()                       # every valid name
         list_variables(metric="intensity")     # intensity_* across applicable hazards
         list_variables(scenario="rcp4p5")      # *_rcp4p5 across applicable metrics
         list_variables(hazard="wildfire")      # only what wildfire publishes
-
-    If ``client`` is provided and ``verify=True`` (default), the live Cecil
-    catalogue is cross-checked via :func:`verify_catalog` and any drift is
-    logged as warnings. Pass ``verify=False`` to skip the check even when a
-    client is given. With no client, returns the static catalogue.
     """
     names = sorted({
         f"{m}_{s}"
@@ -93,55 +79,10 @@ def list_variables(metric: str | None = None,
         for h in hazards if hazard in (None, h)
         for s in SCENARIOS_BY_HAZARD[h] if scenario in (None, s)
     })
-    if client is not None and verify:
-        _log_catalog_drift(verify_catalog(client))
     return names
 
 
-def _log_catalog_drift(report: dict) -> None:
-    """Emit a warning for each hazard with missing or extra variables."""
-    for hazard, info in report.items():
-        if info["missing"]:
-            log.warning(f"{hazard}: catalogue expects variables not in live data: {sorted(info['missing'])}")
-        if info["extra"]:
-            log.warning(f"{hazard}: live data has variables not in catalogue: {sorted(info['extra'])}")
-
-
 _ALL_VARIABLES = frozenset(list_variables())
-
-
-def verify_catalog(client) -> dict[str, dict]:
-    """Cross-check the hardcoded catalogue against Cecil's live dataset metadata.
-
-    Queries each dataset in :data:`DATASETS` for its actual variable list and
-    compares to what :func:`list_variables` predicts. Useful at session start
-    to detect drift if Emmi adds/renames variables between releases.
-
-    Returns ``{hazard: {...}}`` with these fields per hazard:
-
-    * ``missing``  -- expected but not in live (drift: maybe Emmi removed it).
-    * ``extra``    -- in live but neither expected nor in :data:`KNOWN_EXCLUDED`
-                       (drift: maybe Emmi added something new).
-    * ``excluded`` -- live variables that match :data:`KNOWN_EXCLUDED`. Confirms
-                       which intentional omissions are actually present. If this
-                       shrinks unexpectedly, our exclusion list is stale.
-    * ``live``, ``expected`` -- the raw sets, for reference.
-
-    Non-empty ``missing`` or ``extra`` indicates the catalogue should be updated.
-    """
-    report = {}
-    for hazard, dataset_id in DATASETS.items():
-        ds = client.get_dataset(dataset_id)
-        live = {v.name for v in ds.variables}
-        expected = set(list_variables(hazard=hazard))
-        report[hazard] = {
-            "live":     live,
-            "expected": expected,
-            "missing":  expected - live,
-            "extra":    live - expected - KNOWN_EXCLUDED,
-            "excluded": live & KNOWN_EXCLUDED,
-        }
-    return report
 
 
 # ---------- AOI geometry -------------------------------------------------
@@ -170,27 +111,36 @@ def point_aoi(lat: float, lon: float, target_ha: float = 1.0) -> dict:
 
 # ---------- Cost ---------------------------------------------------------
 
-def estimate_cost(portfolio: pd.DataFrame, target_ha: float = 1.0) -> dict:
-    """Print and return a bundle-priced cost estimate.
+def estimate_cost(client, portfolio: pd.DataFrame, target_ha: float = 1.0) -> dict:
+    """Print and return a bundle-priced cost estimate, using live Cecil rates.
 
-    CHD is bundle priced: one $/ha covers all four hazard datasets, so
-    billable hectares = ``len(portfolio) * target_ha``.
+    Per-hectare rates are fetched from ``Dataset.pricing.tiers`` on one CHD
+    dataset (CHD is bundle priced, so all four share the same per-ha rate).
+    Billable hectares = ``len(portfolio) * target_ha``.
+
+    Returns ``{"total_ha": float, "rates_per_ha": {tier: $/ha},
+    "totals": {tier: $}}``.
     """
     n_assets = len(portfolio)
     total_ha = float(n_assets * target_ha)
-    entry_usd = total_ha * 5.0
-    subscription_usd = total_ha * 0.5
+
+    # All four CHD datasets share bundle pricing; query one.
+    ds = client.get_dataset(DATASETS["wildfire"])
+    rates = {t.volume.nominal: t.price.amount for t in (ds.pricing.tiers or [])}
+    totals = {tier: total_ha * rate for tier, rate in rates.items()}
 
     log.info(f"Per-asset AOI area: {target_ha:.3f} ha")
-    log.info(f"Assets: {n_assets}, hazards bundled into one $/ha charge")
+    log.info(f"Assets: {n_assets} (all four hazards bundled into one $/ha charge)")
     log.info(f"Total billable hectares: {total_ha:.3f}")
-    log.info(f"Entry tier        @ $5.0/ha: ${entry_usd:>8,.2f}")
-    log.info(f"Subscription tier @ $0.5/ha: ${subscription_usd:>8,.2f}")
+    for tier, rate in rates.items():
+        log.info(f"  {tier:25s} @ ${rate}/ha: ${totals[tier]:>8,.2f}")
+    for line in (ds.pricing.description or []):
+        log.info(f"Pricing details: {line}")
 
     return {
         "total_ha": total_ha,
-        "entry_usd": entry_usd,
-        "subscription_usd": subscription_usd,
+        "rates_per_ha": rates,
+        "totals": totals,
     }
 
 
@@ -291,7 +241,7 @@ def sample(ds: xr.Dataset, variable: str, year: int | None = None) -> float:
     return float(da.mean(skipna=True).values)
 
 
-# ---------- Screen orchestrator ------------------------------------------
+# ---------- Get hazard data for portfolio ------------------------------------------
 
 def screen(
     client,
@@ -326,7 +276,7 @@ def screen(
         tag:       inserted into the AOI ``external_ref`` for namespacing.
         subs:      reuse the output of :func:`provision` instead of re-running
                    it. Useful when calling :func:`screen` multiple times.
-        cache:     reuse an xarray cache across calls. Each subscription
+        cache:     dict; reuse xarray cache across calls. Each subscription
                    downloads once; repeat screens are much faster.
         require_confirmation: print cost and prompt y/n. Returns ``None`` on abort.
 
@@ -352,7 +302,7 @@ def screen(
             raise ValueError(f"Unknown hazard: {h!r}. Valid: {list(DATASETS)}")
 
     if require_confirmation:
-        estimate_cost(portfolio, target_ha=target_ha)
+        estimate_cost(client, portfolio, target_ha=target_ha)
         try:
             response = input("\nProceed? [y/N]: ").strip().lower()
         except EOFError:
@@ -381,7 +331,8 @@ def screen(
             for r in records
         ]
 
-    # Sum Hazard Aggregation recommended per https://support.emmi.io/questions/climate-hazard-diagnostics-multi-hazard-aggregation
+    # Aggregate across hazards by summing. See:
+    # https://support.emmi.io/questions/climate-hazard-diagnostics-multi-hazard-aggregation
     df["total"] = df[list(hazards)].sum(axis=1, skipna=False)
     if use_value:
         df["total_usd"] = df["total"] * df["value_usd"]
