@@ -8,7 +8,7 @@ Public API:
     DATASETS, METRICS, SCENARIOS_BY_HAZARD   catalogue (all keyed by hazard)
     VALID_METRICS                            flat set of every metric name
     list_variables                           discover valid variable names
-    list_live_datasets                       fetch Cecil's live dataset catalogue
+    verify_catalog                           cross-check the catalogue against the live API
     point_aoi                                build a square AOI for an asset
     estimate_cost                            preview $ before subscribing
     provision                                create or reuse AOIs + subscriptions
@@ -66,51 +66,79 @@ VALID_SCENARIOS = ("baseline", "rcp2p6", "rcp4p5", "rcp6p0", "rcp8p5")
 VALID_FUTURE_YEARS = (2030, 2050, 2080)
 BASELINE_YEAR = 1980
 
+# Variables that exist in Cecil's response but are deliberately omitted from
+# METRICS (not useful for portfolio-style continuous sampling). verify_catalog
+# subtracts these so they don't show up as drift.
+KNOWN_EXCLUDED = frozenset(f"land_mask_{s}" for s in VALID_SCENARIOS)
+
+
 def list_variables(metric: str | None = None,
                    scenario: str | None = None,
-                   hazard: str | None = None) -> list[str]:
+                   hazard: str | None = None,
+                   client=None,
+                   verify: bool = True) -> list[str]:
     """Return CHD variable names matching the filters. ``None`` means any.
 
         list_variables()                       # every valid name
         list_variables(metric="intensity")     # intensity_* across applicable hazards
         list_variables(scenario="rcp4p5")      # *_rcp4p5 across applicable metrics
         list_variables(hazard="wildfire")      # only what wildfire publishes
+
+    If ``client`` is provided and ``verify=True`` (default), the live Cecil
+    catalogue is cross-checked via :func:`verify_catalog` and any drift is
+    logged as warnings. Pass ``verify=False`` to skip the check even when a
+    client is given. With no client, returns the static catalogue.
     """
     names = sorted({
         f"{m}_{s}"
-        for h, metrics_for_h in METRICS.items() if hazard in (None, h)
-        for m in metrics_for_h if metric in (None, m)
+        for h, ms in METRICS.items() if hazard in (None, h)
+        for m in ms if metric in (None, m)
         for s in SCENARIOS_BY_HAZARD[h] if scenario in (None, s)
     })
+    if client is not None and verify:
+        for h, info in verify_catalog(client).items():
+            if info["missing"]:
+                log.warning(f"{h}: catalogue expects variables not in live data: {sorted(info['missing'])}")
+            if info["extra"]:
+                log.warning(f"{h}: live data has variables not in catalogue: {sorted(info['extra'])}")
     return names
 
 
 _ALL_VARIABLES = frozenset(list_variables())
 
 
-def list_live_datasets(client) -> list:
-    """Print each CHD dataset's live variables and available years.
+def verify_catalog(client) -> dict[str, dict]:
+    """Cross-check the hardcoded catalogue against Cecil's live dataset metadata.
 
-    For each of the four CHD datasets, fetches the live variable list from
-    Cecil and pairs it with the year set the helper expects (baseline plus
-    the future projection years).
+    Queries each dataset in :data:`DATASETS` for its actual variable list and
+    compares to what :func:`list_variables` predicts. Useful at session start
+    to detect drift if Emmi adds/renames variables between releases.
+
+    Returns ``{hazard: {...}}`` with these fields per hazard:
+
+    * ``missing``  -- expected but not in live (drift: maybe Emmi removed it).
+    * ``extra``    -- in live but neither expected nor in :data:`KNOWN_EXCLUDED`
+                       (drift: maybe Emmi added something new).
+    * ``excluded`` -- live variables that match :data:`KNOWN_EXCLUDED`. Confirms
+                       which intentional omissions are actually present. If this
+                       shrinks unexpectedly, our exclusion list is stale.
+    * ``live``, ``expected`` -- the raw sets, for reference.
+
+    Non-empty ``missing`` or ``extra`` indicates the catalogue should be updated.
     """
-    chd_ids = set(DATASETS.values())
-    live = [d for d in client.list_datasets() if d.id in chd_ids]
-    by_id = {d.id: d for d in live}
-    years = [BASELINE_YEAR, *VALID_FUTURE_YEARS]
-
-    log.info(f"CHD datasets on Cecil ({len(live)}/{len(chd_ids)} live):")
-    for hazard, uuid in DATASETS.items():
-        d = by_id.get(uuid)
-        if d is None:
-            log.warning(f"  {hazard}: MISSING ({uuid})")
-            continue
-        variables = sorted(v.name for v in d.variables)
-        log.info(f"  {hazard}")
-        log.info(f"    variables: {variables}")
-        log.info(f"    years:     {years}")
-    return live
+    report = {}
+    for hazard, dataset_id in DATASETS.items():
+        ds = client.get_dataset(dataset_id)
+        live = {v.name for v in ds.variables}
+        expected = set(list_variables(hazard=hazard))
+        report[hazard] = {
+            "live":     live,
+            "expected": expected,
+            "missing":  expected - live,
+            "extra":    live - expected - KNOWN_EXCLUDED,
+            "excluded": live & KNOWN_EXCLUDED,
+        }
+    return report
 
 
 # ---------- AOI geometry -------------------------------------------------
