@@ -5,8 +5,10 @@ hectare-scale point Areas of Interest (AOIs), safe re-runnable provisioning,
 scenario-aware sampling. Requires ``CECIL_API_KEY`` in the environment.
 
 Public API:
-    DATASETS, METRICS, SCENARIOS_BY_HAZARD   catalogue
+    DATASETS, METRICS, SCENARIOS_BY_HAZARD   catalogue (all keyed by hazard)
+    VALID_METRICS                            flat set of every metric name
     list_variables                           discover valid variable names
+    list_live_datasets                       fetch Cecil's live dataset catalogue
     point_aoi                                build a square AOI for an asset
     estimate_cost                            preview $ before subscribing
     provision                                create or reuse AOIs + subscriptions
@@ -40,16 +42,17 @@ DATASETS = {
     "fluvial_floods": "9e2f989c-1df1-44d6-b281-9252002f388a",
 }
 
-# Each metric maps to the hazards that publish it. See the README for units
-# and methodology notes.
+# Metrics each hazard publishes. Keyed by hazard so it matches the shape of
+# DATASETS and SCENARIOS_BY_HAZARD. See the README for units and methodology.
 METRICS = {
-    "average_annual_loss": ["wildfire", "cyclones", "coastal_floods", "fluvial_floods"],
-    "intensity":           ["wildfire", "cyclones", "coastal_floods", "fluvial_floods"],
-    "probability":         ["wildfire", "cyclones", "coastal_floods", "fluvial_floods"],
-    "fire_danger_days":    ["wildfire"],
-    "wind_speed_mps":      ["cyclones"],
-    "depth_meters":        ["coastal_floods", "fluvial_floods"],
+    "wildfire":       ["average_annual_loss", "intensity", "probability", "fire_danger_days"],
+    "cyclones":       ["average_annual_loss", "intensity", "probability", "wind_speed_mps"],
+    "coastal_floods": ["average_annual_loss", "intensity", "probability", "depth_meters"],
+    "fluvial_floods": ["average_annual_loss", "intensity", "probability", "depth_meters"],
 }
+
+# Flat set of every metric name, for cheap "is this a valid metric?" checks.
+VALID_METRICS = frozenset({m for ms in METRICS.values() for m in ms})
 
 # Floods are only published for baseline / rcp4p5 / rcp8p5.
 SCENARIOS_BY_HAZARD = {
@@ -75,14 +78,39 @@ def list_variables(metric: str | None = None,
     """
     names = sorted({
         f"{m}_{s}"
-        for m, hazards in METRICS.items() if metric in (None, m)
-        for h in hazards if hazard in (None, h)
+        for h, metrics_for_h in METRICS.items() if hazard in (None, h)
+        for m in metrics_for_h if metric in (None, m)
         for s in SCENARIOS_BY_HAZARD[h] if scenario in (None, s)
     })
     return names
 
 
 _ALL_VARIABLES = frozenset(list_variables())
+
+
+def list_live_datasets(client) -> list:
+    """Print each CHD dataset's live variables and available years.
+
+    For each of the four CHD datasets, fetches the live variable list from
+    Cecil and pairs it with the year set the helper expects (baseline plus
+    the future projection years).
+    """
+    chd_ids = set(DATASETS.values())
+    live = [d for d in client.list_datasets() if d.id in chd_ids]
+    by_id = {d.id: d for d in live}
+    years = [BASELINE_YEAR, *VALID_FUTURE_YEARS]
+
+    log.info(f"CHD datasets on Cecil ({len(live)}/{len(chd_ids)} live):")
+    for hazard, uuid in DATASETS.items():
+        d = by_id.get(uuid)
+        if d is None:
+            log.warning(f"  {hazard}: MISSING ({uuid})")
+            continue
+        variables = sorted(v.name for v in d.variables)
+        log.info(f"  {hazard}")
+        log.info(f"    variables: {variables}")
+        log.info(f"    years:     {years}")
+    return live
 
 
 # ---------- AOI geometry -------------------------------------------------
@@ -267,7 +295,7 @@ def screen(
         portfolio: DataFrame with ``name``, ``lat``, ``lon``, optional ``value_usd``.
         scenario:  ``baseline, rcp2p6, rcp4p5, rcp6p0, rcp8p5``, or a list.
         year:      2030, 2050, 2080, or a list. Baseline rows always use 1980.
-        metric:    a key from :data:`METRICS`, or a list.
+        metric:    one of :data:`VALID_METRICS`, or a list.
         hazards:   subset of :data:`DATASETS`. ``None`` means all four.
         delta:     ``True`` -- hazard columns hold ``future - baseline``.
                    ``False`` -- hazard columns hold the absolute value.
@@ -292,8 +320,8 @@ def screen(
         hazards = list(DATASETS.keys())
 
     for m in metrics:
-        if m not in METRICS:
-            raise ValueError(f"Unknown metric: {m!r}. Valid: {list(METRICS)}")
+        if m not in VALID_METRICS:
+            raise ValueError(f"Unknown metric: {m!r}. Valid: {sorted(VALID_METRICS)}")
     for s in scenarios:
         if s not in VALID_SCENARIOS:
             raise ValueError(f"Unknown scenario: {s!r}. Valid: {list(VALID_SCENARIOS)}")
@@ -346,7 +374,7 @@ def screen(
 
 def _exists(metric: str, scenario: str, hazard: str) -> bool:
     """True if ``(metric, scenario)`` is published for ``hazard``."""
-    if hazard not in METRICS[metric]:
+    if metric not in METRICS.get(hazard, []):
         return False
     if scenario == "baseline":
         return True
